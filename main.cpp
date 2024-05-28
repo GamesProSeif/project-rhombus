@@ -11,20 +11,29 @@
 #include <vector>
 #include <array>
 
+#if __has_include("songinfo.h")
+# include "songinfo.h"
+#else
+#define SONG_BPM 87.5
+#define SONG_OFFSET 620
+#define SONG_DURATION 244800
+#define SONG_PATH "audio lowered.wav"
+#endif
+
 #define PI 3.14159265359
 
 const int playerCoordinates[][2] = {{0, 0}, {-2, -2}, {-3, 0}, {0, 3}, {3, 0}, {2, -2}};
-float playerDirection = 0; // 0:UP 1:DOWN 2:LEFT 3:RIGHT
+int playerDirection = 0; // 0:UP 1:DOWN 2:LEFT 3:RIGHT
+float playerSize = 1.0f;
+float playerAngleShift = 0.0f;
+float playerLastEatenArrowType = false;
+float eatenIndicatorOpacity = 0.0f;
 
 bool running = false; // game is running
 bool ranBefore = false; // timer has started before
 long long lastDisplayTime = 0; // time from last frame
 long long nextBeatTime = 0;
 
-float bpm = 87.5;
-// float bpm = 20; // testing bpm
-float offset = 620;
-long long songDuration = 244800;
 int difficulty = 0; // 0:easy 1:medium 2:hard
 
 int score = 0;
@@ -68,6 +77,72 @@ float getAngleFromDirection(int d)
 		break;
 	}
 }
+
+class Animation {
+private:
+	int percentageLength;
+	long long startTime;
+	float p[10][2];
+	float* value;
+	int duration;
+
+	long long getEndTime() {
+		return startTime + (long long) duration;
+	}
+
+public:
+	bool running;
+
+	Animation(float* value, int duration) {
+		this->value = value;
+		this->duration = duration;
+
+		this->percentageLength = 0;
+		this->running = false;
+	}
+
+	void addPercentage(float percentage, float newValue) {
+		p[percentageLength][0] = percentage;
+		p[percentageLength][1] = newValue;
+		percentageLength++;
+	}
+
+	void update() {
+		if (!running)
+			return;
+
+		long long currentTime = getCurrentTime();
+		if (currentTime > getEndTime()) {
+			this->running = false;
+			*value = p[percentageLength - 1][1];
+			return;
+		}
+
+		float percentage = (float) (currentTime - startTime) / (float) duration;
+
+		int i;
+		for (i = 0; i < percentageLength; i++)
+			if (percentage < p[i + 1][0])
+				break;
+			else if (percentage == p[i + 1][0]) {
+				*value = p[i + 1][1];
+				return;
+			}
+
+		float newValue = p[i+1][1] + (((p[i][1] - p[i+1][1]) * (p[i+1][0] - percentage))
+			/ (p[i+1][0] - p[i][0]));
+
+		*value = newValue;
+	}
+
+	void start() {
+		if (percentageLength < 2)
+			return;
+		this->running = true;
+		this->startTime = getCurrentTime();
+	}
+};
+
 // done
 class Print
 {
@@ -239,7 +314,7 @@ public:
 
 	void update(float deltaTime)
 	{
-		radius -= speed * deltaTime / 16.667;
+		radius -= speed * deltaTime / timerInterval;
 		// radius -= speed;
 
 		long long currentTime = getCurrentTime();
@@ -284,6 +359,7 @@ public:
 };
 
 std::vector<Enemy> enemies;
+std::vector<Animation> animations;
 std::vector<std::array<int, 2>> backgrounds; // {[color_code, size], ...}
 
 class beat
@@ -291,7 +367,7 @@ class beat
 public:
 	static void start_music()
 	{
-		sndPlaySound("audio lowered.wav", SND_ASYNC);
+		sndPlaySound(SONG_PATH, SND_ASYNC);
 	}
 	static void stop_music()
 	{
@@ -429,8 +505,12 @@ public:
 	{
 		glPushMatrix();
 		glTranslatef(centerX, centerY, 0.0f);
+		glScalef(playerSize, playerSize, 1.0f);
 
-		glRotatef(getAngleFromDirection(playerDirection) * 180 / PI, 0.0f, 0.0f, 1.0f);
+		glRotatef(
+			(getAngleFromDirection(playerDirection) + playerAngleShift) * 180 / PI,
+			0.0f, 0.0f, 1.0f
+		);
 
 		glColor3f(1.0f, 1.0f, 1.0f);
 		glBegin(GL_POLYGON);
@@ -438,11 +518,20 @@ public:
 			glVertex2f(playerCoordinates[i][0], playerCoordinates[i][1]);
 		glEnd();
 
-		// glBegin(GL_LINE_STRIP);
-		// glVertex2f(11, 1);
-		// glVertex2f(0, 12);
-		// glVertex2f(-11, 1);
-		// glEnd();
+		if (eatenIndicatorOpacity != 0)
+		{
+			if (playerLastEatenArrowType)
+				glColor4f(0.01f, 0.70f, 0.79f, eatenIndicatorOpacity);
+			else
+				glColor4f(0.97f, 0.85f, 0.29f, eatenIndicatorOpacity);
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+			glBegin(GL_LINE_STRIP);
+			glVertex2f(9, 1);
+			glVertex2f(0, 10);
+			glVertex2f(-9, 1);
+			glEnd();
+		}
 
 		glPopMatrix();
 	}
@@ -486,7 +575,7 @@ void update()
 
 	// check if song has ended -> set running to false && return
 	long long currentTime = getCurrentTime();
-	if (currentTime - startTime > songDuration) {
+	if (currentTime - startTime > SONG_DURATION) {
 		returnToStartMenu();
 		return;
 	}
@@ -496,7 +585,7 @@ void update()
 	if (currentTime >= nextBeatTime)
 	{
 		onbeat();
-		nextBeatTime = currentTime + (long long)(60000 / bpm);
+		nextBeatTime = currentTime + (long long)(60000 / SONG_BPM);
 	}
 
 	auto bg = backgrounds.begin();
@@ -509,6 +598,17 @@ void update()
 			bg++;
 	}
 
+	auto animation = animations.begin();
+	while (animation != animations.end())
+	{
+		if (animation->running)
+		{
+			animation->update();
+			animation++;
+		} else
+			animation = animations.erase(animation);
+	}
+
 	auto enemy = enemies.begin();
 	while (enemy != enemies.end())
 	{
@@ -519,12 +619,38 @@ void update()
 			{ // successful arrow hit
 				score++;
 				combo++;
+				playerLastEatenArrowType = enemy->shifting;
 				enemy = enemies.erase(enemy);
+
+				Animation enlargePlayerSizeAnimation(&playerSize, 200);
+				enlargePlayerSizeAnimation.addPercentage(0, playerSize);
+				enlargePlayerSizeAnimation.addPercentage(0.5, playerSize + 0.2);
+				enlargePlayerSizeAnimation.addPercentage(1, playerSize);
+
+				Animation showEatenIndicatorAnimation(&eatenIndicatorOpacity, 200);
+				showEatenIndicatorAnimation.addPercentage(0, 0);
+				showEatenIndicatorAnimation.addPercentage(0.33, 1);
+				showEatenIndicatorAnimation.addPercentage(0.66, 1);
+				showEatenIndicatorAnimation.addPercentage(1, 0);
+
+				enlargePlayerSizeAnimation.start();
+				animations.push_back(enlargePlayerSizeAnimation);
+				showEatenIndicatorAnimation.start();
+				animations.push_back(showEatenIndicatorAnimation);
 			}
 			else
 			{ // unsuccessful arrow hit
 				combo = 0;
 				enemy = enemies.erase(enemy);
+
+				Animation shiftPlayerAngleAnimation(&playerAngleShift, 200);
+				shiftPlayerAngleAnimation.addPercentage(0, playerAngleShift);
+				shiftPlayerAngleAnimation.addPercentage(0.33, playerAngleShift + 0.2);
+				shiftPlayerAngleAnimation.addPercentage(0.66, playerAngleShift - 0.2);
+				shiftPlayerAngleAnimation.addPercentage(1, playerAngleShift);
+
+				shiftPlayerAngleAnimation.start();
+				animations.push_back(shiftPlayerAngleAnimation);
 			}
 		}
 		else
@@ -676,13 +802,15 @@ void returnToStartMenu() {
 	enemies.clear();
 }
 
-void startGame(int diff) {
+void startGame(int diff = 0) {
 	difficulty = diff;
 	inStartMenu = false;
 	// Start the game
 	Time timer;
-	nextBeatTime = getCurrentTime() + (long long)offset;
+	nextBeatTime = getCurrentTime() + (long long)SONG_OFFSET;
 	timer.startTimer();
+	score = 0;
+	combo = 0;
 	running = true;
 	startTime = getCurrentTime();
 	// Start the music
@@ -721,7 +849,7 @@ int main(int argc, char **argv)
 	glutInit(&argc, argv);
 	glutInitWindowSize(phyWidth, phyHeight);
 	glutInitWindowPosition(10, 10);
-	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
+	glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE);
 	glutCreateWindow("Project Rhombus");
 	glutMouseFunc(handleStartMenuClick);
 	// glutFullScreen();

@@ -1,0 +1,1 @@
+g++ main.cpp -o main -lopengl32 -lfreeglut -lglu32 -lwinmm -std=c++11 && main.exe
